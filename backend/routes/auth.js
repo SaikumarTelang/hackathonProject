@@ -4,20 +4,56 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+const JWT_SECRET = process.env.JWT_SECRET || 'nova-dev-jwt-secret-change-me';
+if (!process.env.JWT_SECRET) {
+    console.warn('JWT_SECRET missing in environment. Using development fallback secret.');
+}
+
+function normalizeEmail(email) {
+    return String(email || '').trim().toLowerCase();
+}
+
+function isStrongPassword(password) {
+    const p = String(password || '');
+    // Simple but effective policy:
+    // - min 8 chars
+    // - at least one letter
+    // - at least one number
+    return p.length >= 8 && /[A-Za-z]/.test(p) && /\d/.test(p);
+}
+
 // @route   POST /api/auth/register
-// @desc    Register a new user (customer/operator)
+// @desc    Register a new customer user
 router.post('/register', async (req, res) => {
     try {
         const { email, password, role, name } = req.body;
+        const normalizedEmail = normalizeEmail(email);
+
+        if (!normalizedEmail) {
+            return res.status(400).json({ msg: 'Email is required' });
+        }
+        if (!password) {
+            return res.status(400).json({ msg: 'Password is required' });
+        }
+
+        if (role && String(role).toUpperCase() !== 'CUSTOMER') {
+            return res.status(403).json({ msg: 'Only customer registration is allowed' });
+        }
+
+        if (!isStrongPassword(password)) {
+            return res.status(400).json({
+                msg: 'Password must be at least 8 characters and include at least one letter and one number'
+            });
+        }
 
         // 1. Check if user already exists
-        let user = await User.findOne({ email });
+        let user = await User.findOne({ email: normalizedEmail });
         if (user) {
             return res.status(400).json({ msg: 'User already exists' });
         }
 
         // 2. Create new user instance
-        user = new User({ email, password, role: role || 'CUSTOMER', name: name || '' });
+        user = new User({ email: normalizedEmail, password, role: 'CUSTOMER', name: name || '' });
 
         // 3. Hash the password
         const salt = await bcrypt.genSalt(10);
@@ -38,17 +74,18 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
+        const normalizedEmail = normalizeEmail(email);
 
         // 1. Check if user exists
-        let user = await User.findOne({ email });
+        let user = await User.findOne({ email: normalizedEmail });
         if (!user) {
-            return res.status(400).json({ msg: 'Invalid Credentials - User not found' });
+            return res.status(400).json({ msg: 'Invalid email or password' });
         }
 
         // 2. Compare passwords
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
-            return res.status(400).json({ msg: 'Invalid Credentials - Password mismatch' });
+            return res.status(400).json({ msg: 'Invalid email or password' });
         }
 
         // 3. Create JWT Payload
@@ -62,7 +99,7 @@ router.post('/login', async (req, res) => {
         // 4. Sign the token
         jwt.sign(
             payload,
-            process.env.JWT_SECRET,
+            JWT_SECRET,
             { expiresIn: '10h' }, // Token valid for the duration of the hackathon
             (err, token) => {
                 if (err) throw err;

@@ -28,12 +28,63 @@ function parseNumberFromText(value) {
     return Number(m[1]);
 }
 
+function extractOrderIdFromText(input) {
+    const m = String(input || '').match(/(?:order\s*)?(?:number|id|#)\s*(\d+)/i) || String(input || '').match(/\b(\d{4,})\b/);
+    return m ? Number(m[1]) : 0;
+}
+
+function extractQuantityUpdate(input) {
+    const m =
+        String(input || '').match(/(?:change|update|set)\s+(?:the\s+)?quantity\s+(?:to\s+)?(\d+(?:\.\d+)?)/i) ||
+        String(input || '').match(/\bquantity\s+(?:to\s+)?(\d+(?:\.\d+)?)/i);
+    return m ? parseNumberFromText(m[1]) : 0;
+}
+
+function extractQuantityTargetItem(input) {
+    const text = String(input || '');
+    const m =
+        text.match(/\bquantity\s+(?:to\s+)?\d+(?:\.\d+)?\s+(?:of|for)\s+(.+)$/i) ||
+        text.match(/\b(?:set|change|update)\s+(.+?)\s+quantity\s+(?:to\s+)?\d+(?:\.\d+)?$/i);
+    if (!m) return '';
+    return String(m[1] || '')
+        .replace(/\b(?:by|before|on)\b\s+.+$/i, '')
+        .trim();
+}
+
+function normalizeItemName(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^\w\s]/g, '')
+        .replace(/\s+/g, ' ');
+}
+
+function mergeItems(baseItems, additionalItems) {
+    const merged = [];
+    const index = new Map();
+    for (const item of [...(baseItems || []), ...(additionalItems || [])]) {
+        const name = String(item?.name || '').trim();
+        const quantity = Number(item?.quantity || 0);
+        if (!name || quantity <= 0) continue;
+        const key = normalizeItemName(name);
+        if (!index.has(key)) {
+            index.set(key, merged.length);
+            merged.push({ name, quantity });
+        } else {
+            const pos = index.get(key);
+            merged[pos].quantity += quantity;
+        }
+    }
+    return merged;
+}
+
 function extractItemsFromText(input) {
     const text = String(input || '');
     const cleaned = text
-        .replace(/(?:i need|we need|i want|need|please|order|place order|require|procure)/gi, '')
+        .replace(/\b(?:i need|we need|i want|need|please|place order|order|require|procure)\b/gi, '')
         .replace(/\bto\b/gi, ' ')
-        .replace(/(?:deliver(?:ed)?\s+by|delivery\s+by|by|before|on)\s+.+$/i, '')
+        // Remove trailing deadline phrase only (word-boundary guarded so product names like "silicon" are safe)
+        .replace(/\b(?:deliver(?:ed)?\s+by|delivery\s+by|by|before|on)\b\s+.+$/i, '')
         .trim();
 
     const segments = cleaned
@@ -49,12 +100,12 @@ function extractItemsFromText(input) {
         let qty = 0;
         let name = '';
 
-        const qtyFirst = seg.match(/(\d+(?:\.\d+)?)\s*(?:units?|pcs?|pieces?|pairs?|bottles?|barrels?|meters?|rolls?|bags?|tons?|kg|kgs|mt)?\s*(?:of)?\s*(.+)$/i);
+        const qtyFirst = seg.match(/(\d+(?:\.\d+)?)\s*(?:(?:units?|pcs?|pieces?|pairs?|bottles?|barrels?|meters?|rolls?|bags?|tons?|kg|kgs|mt)\b)?\s*(?:of)?\s*(.+)$/i) || seg.match(/(\d+(?:\.\d+)?)\s*(.+)$/i);
         if (qtyFirst) {
             qty = parseNumberFromText(qtyFirst[1]);
             name = String(qtyFirst[2] || '').trim();
         } else {
-            const nameFirst = seg.match(/^(.+?)\s*(?:of)?\s*(\d+(?:\.\d+)?)\s*(?:units?|pcs?|pieces?|pairs?|bottles?|barrels?|meters?|rolls?|bags?|tons?|kg|kgs|mt)?$/i);
+            const nameFirst = seg.match(/^(.+?)\s*(?:of)?\s*(\d+(?:\.\d+)?)\s*(?:(?:units?|pcs?|pieces?|pairs?|bottles?|barrels?|meters?|rolls?|bags?|tons?|kg|kgs|mt)\b)?$/i) || seg.match(/^(.+?)\s*(?:of)?\s*(\d+(?:\.\d+)?)$/i);
             if (nameFirst) {
                 name = String(nameFirst[1] || '').trim();
                 qty = parseNumberFromText(nameFirst[2]);
@@ -127,6 +178,28 @@ function localParseMessage(message) {
         };
     }
 
+    // modify/edit order intent by order id
+    const modifyIntentMatch =
+        /(modify|update|change|edit)\b.*\border\b/i.test(lower) ||
+        /(modify|update|change|edit)\b.*\b\d{4,}\b/i.test(lower);
+    if (modifyIntentMatch) {
+        const orderId = extractOrderIdFromText(text);
+        const items = extractItemsFromText(text);
+        const deadlineMatch = text.match(/\b(?:by|before|on|deliver(?:ed)?\s+by|delivery\s+by)\b\s+(.+)$/i);
+        const looseDateMatch =
+            text.match(/\b(\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b.*)$/i) ||
+            text.match(/\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s*\d{1,2}\b.*)$/i);
+
+        return {
+            intent: 'MODIFY_ORDER',
+            data: {
+                orderId,
+                items,
+                deadline: deadlineMatch?.[1]?.trim() || looseDateMatch?.[1]?.trim() || undefined
+            }
+        };
+    }
+
     // new order intent: supports broad industrial orders
     // e.g. "i want 200 bags of cement, 400 rods on friday"
     const qtyMatch = lower.match(/(\d+)/);
@@ -167,7 +240,7 @@ You are an NLP extraction engine for an industrial procurement order system.
 Your job is to analyze the user's message and extract data into a STRICT JSON object. 
 DO NOT wrap the JSON in markdown blocks. Return ONLY the raw JSON object.
 
-There are 6 possible intents: "NEW_ORDER", "UPDATE_STATUS", "LOG_QUALITY", "QUERY_ORDERS", "CANCEL_ORDER", or "DELETE_ORDER".
+There are 7 possible intents: "NEW_ORDER", "UPDATE_STATUS", "LOG_QUALITY", "QUERY_ORDERS", "CANCEL_ORDER", "DELETE_ORDER", or "MODIFY_ORDER".
 
 1. If the user wants to place an order:
 {
@@ -209,6 +282,16 @@ There are 6 possible intents: "NEW_ORDER", "UPDATE_STATUS", "LOG_QUALITY", "QUER
 {
   "intent": "DELETE_ORDER",
   "data": { "orderId": number }
+}
+
+7. If the customer wants to modify an existing order before acceptance:
+{
+  "intent": "MODIFY_ORDER",
+  "data": {
+    "orderId": number,
+    "items": [{ "name": "string", "quantity": number }],
+    "deadline": "string (optional)"
+  }
 }
 
 CRITICAL: Industrial products are valid even if they are not precision parts (e.g. cement, rods, pipes, alloys, sheets, cables).
@@ -395,6 +478,124 @@ router.post('/', auth, async (req, res) => {
             await order.deleteOne();
             req.app.get('io')?.emit('orders:deleted', { id: deletedId, orderId });
             return res.json({ reply: `Order #${orderId} has been deleted successfully.` });
+        }
+
+        // --- Intent 1d: Modify Order (Customer by visible order ID, before acceptance) ---
+        if (parsedData.intent === 'MODIFY_ORDER') {
+            if (isOperator(req)) {
+                return res.json({ reply: "Operator cannot modify customer orders via chat." });
+            }
+
+            const orderId = Number(parsedData.data?.orderId || extractOrderIdFromText(message) || 0);
+            if (!orderId) return res.json({ reply: "Please provide a valid order ID to modify." });
+
+            const order = await Order.findOne({ orderId });
+            if (!order) return res.json({ reply: `I couldn't find order #${orderId}.` });
+            const isOwner = String(order.customer) === String(req.user.id);
+            if (!isOwner) return res.json({ reply: "You can only modify your own orders." });
+            if (!['Received', 'In Review'].includes(order.status)) {
+                return res.json({ reply: `Order #${orderId} can only be modified before acceptance.` });
+            }
+
+            const aiItems = Array.isArray(parsedData.data?.items)
+                ? parsedData.data.items
+                    .map(i => ({ name: String(i?.name || '').trim(), quantity: parseNumberFromText(i?.quantity) }))
+                    .filter(i => i.name && i.quantity > 0)
+                : [];
+            const heuristicItems = extractItemsFromText(message).filter(i => {
+                const n = String(i.name || '').toLowerCase().trim();
+                if (/^(change|update|set)\s+quantity\b/.test(n)) return false;
+                if (/^quantity\b/.test(n)) return false;
+                if (/^order\b/.test(n)) return false;
+                return true;
+            });
+            const finalItems = heuristicItems.length > 0 ? heuristicItems : aiItems;
+            const quantityUpdate = extractQuantityUpdate(message);
+            const quantityTargetItem = extractQuantityTargetItem(message);
+
+            // Supports "add item ..." phrasing in modify prompts.
+            const addSegment = String(message || '').match(/\badd\b([\s\S]+)$/i);
+            const addedItems = addSegment ? extractItemsFromText(addSegment[1]) : [];
+
+            const updatedDeadline = parsedData.data?.deadline || order.deadline;
+            let candidateItems = Array.isArray(order.items)
+                ? order.items.map(i => ({ name: i.name, quantity: i.quantity }))
+                : [];
+
+            // Only override full item list when customer explicitly provides item updates.
+            if (finalItems.length > 0 && !/\bquantity\b/i.test(String(message || ''))) {
+                candidateItems = finalItems;
+            }
+
+            if (quantityUpdate > 0) {
+                // If only quantity is provided, update primary item quantity.
+                if (quantityTargetItem) {
+                    const targetKey = normalizeItemName(quantityTargetItem);
+                    const idx = candidateItems.findIndex(i => normalizeItemName(i.name) === targetKey);
+                    if (idx >= 0) {
+                        candidateItems[idx].quantity = quantityUpdate;
+                    } else {
+                        candidateItems = mergeItems(candidateItems, [{ name: quantityTargetItem, quantity: quantityUpdate }]);
+                    }
+                } else if (candidateItems.length > 0) {
+                    candidateItems[0].quantity = quantityUpdate;
+                } else if (order.partName) {
+                    candidateItems = [{ name: order.partName, quantity: quantityUpdate }];
+                }
+            }
+
+            if (addedItems.length > 0) {
+                candidateItems = mergeItems(candidateItems, addedItems);
+            }
+
+            if (candidateItems.length === 0 && !parsedData.data?.deadline) {
+                return res.json({ reply: "Please provide updated quantity/items and optionally a deadline. Example: modify order 11637 change quantity 2 or modify order 11637 add 5 copper wires." });
+            }
+
+            // Re-balance inventory: release existing reservation, then reserve updated items.
+            if (order.inventoryReserved) {
+                restoreReservedItems(order.items);
+            }
+
+            let verification;
+            try {
+                verification = verifyAndReserveItems(candidateItems);
+            } catch (verifyErr) {
+                console.error("Catalog Verification Error (Modify):", verifyErr.message);
+                // Attempt to restore original reservation to keep data consistent.
+                if (order.items?.length) {
+                    try { verifyAndReserveItems(order.items); } catch (_) { /* noop */ }
+                }
+                return res.json({ reply: "I couldn't verify the modified order right now. Please try again." });
+            }
+
+            if (!verification.passed) {
+                // Reserve original again if modification failed validation.
+                if (order.items?.length) {
+                    try { verifyAndReserveItems(order.items); } catch (_) { /* noop */ }
+                }
+                return res.json({ reply: createVerificationReply(verification) });
+            }
+
+            order.items = verification.acceptedItems.map(({ name, quantity }) => ({ name, quantity }));
+            order.partName = order.items[0]?.name || order.partName;
+            order.quantity = order.items[0]?.quantity || order.quantity;
+            order.deadline = updatedDeadline;
+            order.material = order.material || 'industrial';
+            order.inventoryReserved = true;
+            if (!Array.isArray(order.processLogs)) order.processLogs = [];
+            order.processLogs.push({
+                stage: order.status,
+                note: 'Order modified by customer through chatbot before acceptance.'
+            });
+            await order.save();
+
+            req.app.get('io')?.emit('orders:updated', order);
+            const itemSummary = order.items.map(i => `${i.quantity} ${i.name}`).join(', ');
+            return res.json({
+                reply: `Order #${orderId} has been updated successfully. New details: ${itemSummary}. Deadline: ${order.deadline}.`,
+                order
+            });
         }
 
         // --- Intent 2: Update Status ---

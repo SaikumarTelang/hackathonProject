@@ -27,9 +27,12 @@ function App() {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role>('CUSTOMER');
   const [name, setName] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   
   const [orders, setOrders] = useState<any[]>([]);
   const [catalogItems, setCatalogItems] = useState<Array<{ itemName: string; availableQuantity: number }>>([]);
+  const [customerOrderFilter, setCustomerOrderFilter] = useState<'ALL' | 'In Review' | 'Accepted' | 'Cancelled'>('ALL');
   const [chatInput, setChatInput] = useState('');
   const [chatLog, setChatLog] = useState([
     { sender: 'ai', text: getWelcomeMessage(user?.role) }
@@ -141,19 +144,18 @@ function App() {
     e.preventDefault();
     try {
       let res;
-      try {
-        // Try direct login first to avoid noisy 400 register errors for existing users
-        res = await login({ email, password });
-      } catch (loginErr) {
-        const maybeAxiosErr = loginErr as { response?: { status?: number; data?: { msg?: string } } };
-        const message = maybeAxiosErr.response?.data?.msg || '';
-        const isUserNotFound = maybeAxiosErr.response?.status === 400 && message.toLowerCase().includes('user not found');
-
-        if (!isUserNotFound) {
-          throw loginErr;
+      if (authMode === 'register') {
+        if (role !== 'CUSTOMER') {
+          alert('Only customers can create accounts.');
+          return;
         }
-
-        await register({ email, password, role, name });
+        if (password !== confirmPassword) {
+          alert('Passwords do not match.');
+          return;
+        }
+        await register({ email, password, role: 'CUSTOMER', name });
+        res = await login({ email, password });
+      } else {
         res = await login({ email, password });
       }
 
@@ -163,6 +165,8 @@ function App() {
       setChatLog([{ sender: 'ai', text: getWelcomeMessage(res.user.role) }]);
       localStorage.setItem('token', res.token);
       localStorage.setItem('user', JSON.stringify(res.user));
+      setAuthMode('login');
+      setConfirmPassword('');
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         alert(err.response?.data?.msg || 'Login failed. Please check credentials.');
@@ -242,6 +246,21 @@ function App() {
 
   const renderOrdersTable = () => (
     <div style={{ flex: 1, overflowY: 'auto', padding: '0' }}>
+      {isCustomer && (
+        <div style={{ padding: '12px 15px', borderBottom: '1px solid #e5e7eb', background: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <label style={{ fontSize: '13px', color: '#374151', fontWeight: 600 }}>View Orders:</label>
+          <select
+            value={customerOrderFilter}
+            onChange={e => setCustomerOrderFilter(e.target.value as 'ALL' | 'In Review' | 'Accepted' | 'Cancelled')}
+            style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid #d1d5db', fontSize: '13px', outline: 'none' }}
+          >
+            <option value="ALL">All</option>
+            <option value="In Review">In Review</option>
+            <option value="Accepted">Accepted</option>
+            <option value="Cancelled">Cancelled</option>
+          </select>
+        </div>
+      )}
       <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
         <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', zIndex: 1 }}>
           <tr>
@@ -254,10 +273,16 @@ function App() {
           </tr>
         </thead>
         <tbody>
-          {orders.length === 0 ? (
+          {(isCustomer
+            ? orders.filter(o => customerOrderFilter === 'ALL' ? true : o.status === customerOrderFilter)
+            : orders
+          ).length === 0 ? (
             <tr><td colSpan={6} style={{ padding: '30px', textAlign: 'center', color: '#6b7280' }}>No orders yet.</td></tr>
           ) : (
-            orders.map(order => (
+            (isCustomer
+              ? orders.filter(o => customerOrderFilter === 'ALL' ? true : o.status === customerOrderFilter)
+              : orders
+            ).map(order => (
               <tr key={order._id} style={{ borderBottom: '1px solid #e5e7eb' }}>
                 <td style={{ padding: '15px', fontWeight: 'bold', color: '#111827' }}>#{order.orderId}</td>
                 <td style={{ padding: '15px', color: '#374151' }}>{renderOrderItems(order)}</td>
@@ -297,22 +322,86 @@ function App() {
             Password: <code>Operator@123</code>
           </div>
           <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px', background: '#f0fdf4', border: '1px solid #86efac', color: '#052e16', fontSize: '13px', lineHeight: '1.5' }}>
-            <strong>Demo Customer Login</strong><br />
-            Email: <code>customer@nova.local</code><br />
-            Password: <code>Customer@123</code><br />
+            <strong>Customer Access</strong><br />
+            Customers should create their own accounts using the <em>Customer + Register</em> options below.<br />
             <span style={{ color: '#166534' }}>
-              Tip: If the customer account doesn’t exist yet, it will be auto-created on first login.
+              Operator accounts are fixed for the system demo; only customers can register new users.
             </span>
           </div>
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-            <select value={role} onChange={e => setRole(e.target.value as Role)} style={{ padding: '12px', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none' }}>
+            <select
+              value={role}
+              onChange={e => {
+                const nextRole = e.target.value as Role;
+                setRole(nextRole);
+                if (nextRole !== 'CUSTOMER') {
+                  setAuthMode('login');
+                  setConfirmPassword('');
+                }
+              }}
+              style={{ padding: '12px', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none' }}
+            >
               <option value="CUSTOMER">Customer</option>
               <option value="OPERATOR">Operator</option>
             </select>
             <input type="text" placeholder="Name (optional)" value={name} onChange={e => setName(e.target.value)} style={{ padding: '12px', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none' }} />
             <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required style={{ padding: '12px', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none' }} />
             <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required style={{ padding: '12px', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none' }} />
-            <button type="submit" style={{ padding: '12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>Continue</button>
+            {role === 'CUSTOMER' && (
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('login');
+                    setConfirmPassword('');
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '10px',
+                    background: authMode === 'login' ? '#2563eb' : '#e5e7eb',
+                    color: authMode === 'login' ? 'white' : '#111827',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontWeight: 700
+                  }}
+                >
+                  Login
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('register')}
+                  style={{
+                    flex: 1,
+                    padding: '10px',
+                    background: authMode === 'register' ? '#10b981' : '#e5e7eb',
+                    color: authMode === 'register' ? 'white' : '#111827',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontWeight: 700
+                  }}
+                >
+                  Register
+                </button>
+              </div>
+            )}
+            {role === 'CUSTOMER' && authMode === 'register' && (
+              <input
+                type="password"
+                placeholder="Confirm Password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                required
+                style={{ padding: '12px', borderRadius: '6px', border: '1px solid #d1d5db', outline: 'none' }}
+              />
+            )}
+            <button
+              type="submit"
+              style={{ padding: '12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}
+            >
+              {role === 'CUSTOMER' && authMode === 'register' ? 'Create Account' : 'Continue'}
+            </button>
           </form>
         </div>
       </div>
