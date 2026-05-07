@@ -131,13 +131,22 @@ function localParseMessage(message) {
     // e.g. "i want 200 bags of cement, 400 rods on friday"
     const qtyMatch = lower.match(/(\d+)/);
     const deadlineMatch = text.match(/\b(?:by|before|on|deliver(?:ed)?\s+by|delivery\s+by)\b\s+(.+)$/i);
+    const looseDateMatch =
+        text.match(/\b(\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b.*)$/i) ||
+        text.match(/\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s*\d{1,2}\b.*)$/i);
     const materialMatch = lower.match(/\b(steel|stainless steel|aluminium|aluminum|titanium|copper|brass|iron|plastic|cement|concrete|alloy|carbon steel|rod|rods|pipe|pipes|sheet|sheets|wire|cable|beam|beams)\b/i);
     const orderIntentMatch = /(i need|we need|i want|order|place order|require|procure)/i.test(lower);
-    if (qtyMatch && orderIntentMatch) {
-        const items = extractItemsFromText(text);
-        const quantity = Number(qtyMatch[1]);
-        const material = materialMatch ? materialMatch[1] : 'industrial';
-        const partName = items[0]?.name || 'industrial item';
+    const items = extractItemsFromText(text);
+    const quantity = qtyMatch ? Number(qtyMatch[1]) : 0;
+    const material = materialMatch ? materialMatch[1] : 'industrial';
+    const partName = items[0]?.name || 'industrial item';
+    const inferredDeadline = deadlineMatch?.[1]?.trim() || looseDateMatch?.[1]?.trim() || 'TBD';
+
+    // Accept both:
+    // - full intent prompts: "i want to order 40 drill bits by 3 jan"
+    // - short prompts: "drill bits 40 by 3 jan" / "drill bits 40 3 jan"
+    const looksLikeShortOrder = items.length > 0 && (Boolean(deadlineMatch) || Boolean(looseDateMatch));
+    if ((qtyMatch && orderIntentMatch) || looksLikeShortOrder) {
         return {
             intent: 'NEW_ORDER',
             data: {
@@ -145,7 +154,7 @@ function localParseMessage(message) {
                 material,
                 quantity: items[0]?.quantity || quantity,
                 items,
-                deadline: deadlineMatch?.[1]?.trim() || 'TBD'
+                deadline: inferredDeadline
             }
         };
     }
@@ -203,6 +212,10 @@ There are 6 possible intents: "NEW_ORDER", "UPDATE_STATUS", "LOG_QUALITY", "QUER
 }
 
 CRITICAL: Industrial products are valid even if they are not precision parts (e.g. cement, rods, pipes, alloys, sheets, cables).
+Short-form order prompts are allowed, for example:
+- "Drill Bits 40 by 3 Jan"
+- "Copper Wires 60 10 Jan"
+These should still be extracted as intent NEW_ORDER with items, quantity, and deadline.
 Only if the user asks for something completely unrelated to industrial ordering (like ordering food, chatting, or coding), return exactly this:
 {"intent": "UNKNOWN"}
 `;
